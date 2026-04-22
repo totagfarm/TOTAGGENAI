@@ -1,0 +1,60 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile information.",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string", "format": "email" },
+        "displayName": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["email", "createdAt"]
+    },
+    "ContentItem": {
+      "title": "Content Item",
+      "description": "Generated video or image asset.",
+      "type": "object",
+      "properties": {
+        "type": { "type": "string", "enum": ["video", "image"] },
+        "title": { "type": "string" },
+        "thumbnail": { "type": "string" },
+        "date": { "type": "string" },
+        "scheduledDate": { "type": "string", "format": "date-time" },
+        "platform": { "type": "string", "enum": ["TikTok", "Instagram", "YouTube"] },
+        "userId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["type", "title", "thumbnail", "userId", "createdAt", "updatedAt"]
+    },
+    "Asset": {
+      "title": "Brand Asset",
+      "description": "User uploaded brand assets like logos, colors, or fonts.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "type": { "type": "string", "enum": ["logo", "palette", "font"] },
+        "value": { "type": "string" },
+        "userId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "type", "value", "userId", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Private user profile data."
+    },
+    "/content/{contentId}": {
+      "schema": "ContentItem",
+      "description": "Collection of generated content items."
+    },
+    "/assets/{assetId}": {
+      "schema": "Asset",
+      "description": "Collection of user-specific brand assets."
+    }
+  }
+}

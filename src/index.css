@@ -1,0 +1,40 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --font-display: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  
+  --color-forest: #0B2E1E;
+  --color-gold: #D4AF37;
+  --color-gold-dark: #B8860B;
+  --color-sky: #87CEEB;
+  --color-sky-dark: #4FA3C7;
+}
+
+@layer components {
+  .glass {
+    background: rgba(255, 255, 255, 0.05);
+    backdrop-filter: blur(12px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+  }
+  
+  .sky-bg {
+    background: linear-gradient(135deg, #87CEEB 0%, #4FA3C7 100%);
+  }
+  
+  .gold-bg {
+    background: linear-gradient(135deg, #D4AF37 0%, #B8860B 100%);
+  }
+
+  .input-pill {
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    transition: all 0.2s;
+  }
+}
+
+@layer base {
+  body {
+    @apply bg-forest text-white font-sans;
+  }
+}

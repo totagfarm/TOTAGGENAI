@@ -1,0 +1,6 @@
+{
+  "name": "TOTAGGENAI",
+  "description": "Transform 10 minutes of brainstorming into a month of social media content with AI-powered batch generation.",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": ["video-generation", "voice-transformation", "content-planning"]
+}

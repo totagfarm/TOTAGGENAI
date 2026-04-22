@@ -1,0 +1,81 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Global Helpers
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Entity Validations
+    function isValidUser(data) {
+      return data.email is string && data.email.size() <= 256
+          && data.createdAt == request.time
+          && (data.displayName == null || (data.displayName is string && data.displayName.size() <= 100))
+          && (data.photoURL == null || (data.photoURL is string && data.photoURL.size() <= 1000));
+    }
+
+    function isValidContentItem(data) {
+      return data.type in ['video', 'image']
+          && data.title is string && data.title.size() <= 256
+          && data.thumbnail is string && data.thumbnail.size() <= 1000
+          && (data.videoUrl == null || (data.videoUrl is string && data.videoUrl.size() <= 1000))
+          && data.userId == request.auth.uid
+          && (data.scheduledDate == null || data.scheduledDate is timestamp)
+          && data.platform in ['TikTok', 'Instagram', 'YouTube', 'Facebook'];
+    }
+
+    function isValidAsset(data) {
+      return data.name is string && data.name.size() <= 256
+          && data.type in ['logo', 'palette', 'font']
+          && data.value is string && data.value.size() <= 2048
+          && data.userId == request.auth.uid
+          && data.createdAt == request.time;
+    }
+
+    // Rules
+    match /users/{userId} {
+      allow get: if isOwner(userId);
+      allow create: if isOwner(userId) && isValidUser(incoming());
+      allow update: if isOwner(userId) 
+                    && incoming().email == existing().email
+                    && incoming().createdAt == existing().createdAt
+                    && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL']);
+    }
+
+      match /content/{contentId} {
+      allow get: if isSignedIn() && existing().userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && (incoming().userId == request.auth.uid);
+      allow update: if isSignedIn() && existing().userId == request.auth.uid;
+      allow delete: if isSignedIn() && existing().userId == request.auth.uid;
+    }
+
+    match /assets/{assetId} {
+      allow get: if isSignedIn() && existing().userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && isValidAsset(incoming());
+      allow delete: if isSignedIn() && existing().userId == request.auth.uid;
+    }
+  }
+}
