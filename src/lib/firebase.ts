@@ -1,6 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
-import { getFirestore } from 'firebase/firestore';
+import { getFirestore, collection, addDoc, getDocs, query, orderBy, serverTimestamp } from 'firebase/firestore';
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import firebaseConfig from '../../firebase-applet-config.json';
 
@@ -16,4 +16,24 @@ export function getGemini() {
     genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
   }
   return genAI;
+}
+
+export async function saveClonedVoice(userId: string, voiceId: string, name: string) {
+  const clonedVoicesRef = collection(db, `users/${userId}/clonedVoices`);
+  await addDoc(clonedVoicesRef, {
+    voiceId,
+    name,
+    createdAt: serverTimestamp()
+  });
+}
+
+export async function getUserClonedVoices(userId: string) {
+  const clonedVoicesRef = collection(db, `users/${userId}/clonedVoices`);
+  const q = query(clonedVoicesRef, orderBy('createdAt', 'desc'));
+  const snapshot = await getDocs(q);
+  
+  return snapshot.docs.map(doc => ({
+    id: doc.id,
+    ...doc.data()
+  }));
 }

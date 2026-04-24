@@ -1,10 +1,10 @@
 {
-  "projectId": "carbon-crossing-492004-a2",
-  "appId": "1:274710032462:web:8a2a83704e7392e744131f",
-  "apiKey": "AIzaSyAZhzbkkhoqLrDeIPbyZdw76fwpuzUQQ1A",
-  "authDomain": "carbon-crossing-492004-a2.firebaseapp.com",
-  "firestoreDatabaseId": "ai-studio-c0bd4c67-612b-4f5a-b062-19042d860ceb",
-  "storageBucket": "carbon-crossing-492004-a2.firebasestorage.app",
-  "messagingSenderId": "274710032462",
-  "measurementId": ""
+  "projectId": "my-project-17231-96034",
+  "appId": "1:587786164490:web:731ea5dd6e37ad0a4682f3",
+  "apiKey": "AIzaSyDtXO5qetR-pjJehqP05IhcKV3PFyWAXVQ",
+  "authDomain": "my-project-17231-96034.firebaseapp.com",
+  "firestoreDatabaseId": "(default)",
+  "storageBucket": "my-project-17231-96034.firebasestorage.app",
+  "messagingSenderId": "587786164490",
+  "measurementId": "G-H4MR9R8Q63"
 }

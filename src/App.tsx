@@ -29,9 +29,10 @@ import {
   Timer,
   Upload,
   ChevronRight,
-  X
+  X,
+  Square
 } from 'lucide-react';
-import { auth, db, getGemini } from './lib/firebase';
+import { auth, db, getGemini, getUserClonedVoices, saveClonedVoice } from './lib/firebase';
 import { 
   onAuthStateChanged, 
   signInWithPopup, 
@@ -52,6 +53,8 @@ import {
   getDocFromServer,
   orderBy
 } from 'firebase/firestore';
+import { generateElevenLabsVoice, generateRunwayVideo, getElevenLabsVoices, cloneUserVoice } from './services/api';
+import { AVATAR_IDENTITIES, VIDEO_STYLE_PRESETS } from './lib/identities';
 
 // Types
 type InputMode = 'text' | 'image' | 'video' | 'voice';
@@ -67,8 +70,10 @@ interface ContentItem {
   platform: 'TikTok' | 'Instagram' | 'YouTube' | 'Facebook';
   userId: string;
   videoUrl?: string;
+  audioUrl?: string;
   script?: string;
   visualPrompt?: string;
+  musicStyle?: string;
   status?: 'draft' | 'rendering' | 'ready';
 }
 
@@ -146,6 +151,7 @@ export default function App() {
     musicStyle: 'Cinematic',
     videoStyle: 'Dynamic',
     voice: 'Deep Narrator',
+    voiceId: '',
     avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=Felix',
     pacing: 'Balanced',
     duration: '60s'
@@ -193,13 +199,22 @@ export default function App() {
     }
     const q = query(
       collection(db, 'content'), 
-      where('userId', '==', user.uid),
-      orderBy('createdAt', 'desc')
+      where('userId', '==', user.uid)
     );
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const items = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as ContentItem));
+      
+      // Sort in memory to avoid needing a Firestore composite index
+      items.sort((a: any, b: any) => {
+        const timeA = a.createdAt?.toMillis ? a.createdAt.toMillis() : 0;
+        const timeB = b.createdAt?.toMillis ? b.createdAt.toMillis() : 0;
+        return timeB - timeA;
+      });
+
       console.log("Fetched content count:", items.length);
       setGeneratedContent(items);
+    }, (error) => {
+      console.error("Firestore Error in onSnapshot:", error);
     });
     return () => unsubscribe();
   }, [user]);
@@ -263,8 +278,9 @@ export default function App() {
     const provider = new GoogleAuthProvider();
     try {
       await signInWithPopup(auth, provider);
-    } catch (error) {
+    } catch (error: any) {
       console.error("Auth Error:", error);
+      alert(`Authentication failed: ${error.message}\n\nIf you see 'unauthorized domain', you need to add this URL to your Firebase Authorized Domains.`);
     }
   };
 
@@ -313,74 +329,147 @@ export default function App() {
       { type: 'video', title: 'Day 5: Product Deep Dive', thumbnail: 'https://images.unsplash.com/photo-1517336714731-489689fd1ca8?w=400&q=80', date: 'Oct 5', platform: 'YouTube' },
     ];
 
-    const genAI = getGemini();
-    if (genAI && sparkInput.trim()) {
-      try {
-        const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
-        const prompt = `You are a social media strategist for an AI content generation tool TOTAGGENAI. 
-        Given the following brainstorming session/idea: "${sparkInput}", 
-        and the following production settings:
-        - Aspect Ratio: ${productionConfig.aspectRatio}
-        - Music: ${productionConfig.musicStyle}
-        - Video Style: ${productionConfig.videoStyle}
-        - Voice: ${productionConfig.voice}
-        - Pacing: ${productionConfig.pacing}
-        - Duration: ${productionConfig.duration}
-        
-        Generate a content plan for 1 month (approx 6-8 items).
-        Return purely a JSON array of objects with the following structure:
-        {"type": "video" | "image", "title": "short catchy title", "date": "Day X", "platform": "TikTok" | "Instagram" | "YouTube" | "Facebook", "script": "AI script for the video/image", "visualPrompt": "detailed visual description for generation"}
-        Do not include any other text or markdown formatting.`;
+    try {
+      if (!genAI) throw new Error("Gemini API Key missing");
+      if (!sparkInput.trim()) throw new Error("Spark input empty");
 
-        const result = await model.generateContent(prompt);
-        const response = await result.response;
-        const text = response.text();
-        const cleanedText = text.replace(/```json/g, '').replace(/```/g, '').trim();
-        const aiBatch = JSON.parse(cleanedText);
-        
-        if (Array.isArray(aiBatch)) {
-          batchItems = aiBatch.map((item, idx) => ({
+      const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+      const prompt = `You are a social media strategist for an AI content generation tool TOTAGGENAI. 
+      Given the following brainstorming session/idea: "${sparkInput}", 
+      and the following production settings:
+      - Aspect Ratio: ${productionConfig.aspectRatio}
+      - Music: ${productionConfig.musicStyle}
+      - Video Style: ${productionConfig.videoStyle}
+      - Voice: ${productionConfig.voice}
+      - Pacing: ${productionConfig.pacing}
+      - Duration: ${productionConfig.duration}
+      
+      Generate a content plan for 1 month (approx 6-8 items).
+      Return purely a JSON array of objects with the following structure:
+      {"type": "video" | "image", "title": "short catchy title", "date": "Day X", "platform": "TikTok" | "Instagram" | "YouTube" | "Facebook", "script": "AI script for the video/image", "visualPrompt": "detailed visual description for generation"}
+      Do not include any other text or markdown formatting.`;
+
+      const result = await model.generateContent(prompt);
+      const response = await result.response;
+      const text = response.text();
+      const cleanedText = text.replace(/```json/g, '').replace(/```/g, '').trim();
+      const aiBatch = JSON.parse(cleanedText);
+      
+      if (Array.isArray(aiBatch)) {
+        batchItems = await Promise.all(aiBatch.map(async (item, idx) => {
+          let videoUrl = item.type === 'video' ? 'https://www.w3schools.com/html/mov_bbb.mp4' : undefined;
+          let audioUrl = undefined;
+          
+          try {
+            if (item.type === 'video') {
+              // Build the "Master Prompt" for Runway
+              const avatarIdentity = AVATAR_IDENTITIES[productionConfig.voice] || AVATAR_IDENTITIES['Jessica'];
+              const stylePreset = VIDEO_STYLE_PRESETS[productionConfig.videoStyle] || VIDEO_STYLE_PRESETS['Cinematic'];
+              
+              const masterPrompt = `
+                IDENTITY: ${avatarIdentity.description}
+                ACTION: Speaking directly to camera, professional presenter style, high-fidelity synchronized lip movements, phonetic accuracy, ${item.visualPrompt || item.script || item.title}
+                STYLE: ${stylePreset.keywords}
+                ENFORCEMENT: MAINTAIN EXACT LIKENESS. The person must look 100% identical to the provided image. Do not alter facial features.
+              `.trim();
+
+              const durationNum = parseInt(productionConfig.duration.replace(/[^0-9]/g, '')) || 5;
+              console.log("Generating with Master Prompt, Avatar Sync, and Duration:", masterPrompt, productionConfig.avatar, durationNum);
+              videoUrl = await generateRunwayVideo(masterPrompt, productionConfig.aspectRatio, productionConfig.avatar, durationNum);
+            }
+            if (item.script) {
+              audioUrl = await generateElevenLabsVoice(item.script, productionConfig.voiceId || productionConfig.voice);
+            }
+          } catch (apiError) {
+            console.warn("API Error during batch generation mapping:", apiError);
+          }
+
+          let scheduledDateStr = new Date().toISOString();
+          if (item.date && item.date.toLowerCase().includes('day')) {
+            const dayOffset = parseInt(item.date.replace(/[^0-9]/g, '')) || 1;
+            const dateObj = new Date();
+            dateObj.setDate(dateObj.getDate() + dayOffset - 1);
+            scheduledDateStr = dateObj.toISOString();
+          }
+
+          return {
             ...item,
             status: 'ready',
+            scheduledDate: scheduledDateStr,
             thumbnail: `https://picsum.photos/seed/${encodeURIComponent(item.title + Math.random())}/800/450`,
-            videoUrl: item.type === 'video' ? 'https://assets.mixkit.co/videos/preview/mixkit-girl-in-neon-lighting-in-the-city-at-night-21015-large.mp4' : undefined
-          }));
-        }
-      } catch (e) {
-        console.error("Gemini failed:", e);
-        // Fallback to dynamic mock if Gemini strictly fails
-        batchItems = [
-          { 
-            type: 'video', 
-            title: `Insight: ${sparkInput.substring(0, 20)}...`, 
-            date: 'Day 1', 
-            platform: 'TikTok',
-            script: "Opening scene: Dynamic zoom on product. Text overlay 'Revolutionary AI'. Cut to lifestyle shot showing ease of use.",
-            visualPrompt: "Neon-lit workspace, shallow depth of field, 4k cinematic lighting"
-          },
-          { 
-            type: 'image', 
-            title: `Gallery: ${productionConfig.videoStyle} Style`, 
-            date: 'Day 4', 
-            platform: 'Instagram',
-            script: "Hero image showing the transformation. Carousel post detailing the 3 key benefits of the AI spark.",
-            visualPrompt: "Minimalist flat design, vibrant energy colors"
-          },
-          { 
-            type: 'video', 
-            title: `Deep Dive: ${productionConfig.voice} Narration`, 
-            date: 'Day 7', 
-            platform: 'YouTube',
-            script: "Detailed walkthrough of the generation engine. Narration focuses on time-saving and creative freedom.",
-            visualPrompt: "Macro tech shots, floating UI elements, smooth transitions"
-          },
-        ].map(item => ({
-          ...item,
-          status: 'ready',
-          thumbnail: `https://picsum.photos/seed/${encodeURIComponent(item.title + Math.random())}/800/450`,
-          videoUrl: item.type === 'video' ? 'https://assets.mixkit.co/videos/preview/mixkit-girl-in-neon-lighting-in-the-city-at-night-21015-large.mp4' : undefined
+            videoUrl: videoUrl || null,
+            audioUrl: audioUrl || null,
+            musicStyle: productionConfig.musicStyle
+          };
         }));
       }
+    } catch (e) {
+      console.error("Primary generation failed, using fallback:", e);
+      const mockBatch = [
+        { 
+          type: 'video', 
+          title: `Insight: ${sparkInput.substring(0, 20)}...`, 
+          date: 'Day 1', 
+          platform: 'TikTok',
+          script: "Opening scene: Dynamic zoom on product. Text overlay 'Revolutionary AI'. Cut to lifestyle shot showing ease of use.",
+          visualPrompt: "Neon-lit workspace, shallow depth of field, 4k cinematic lighting"
+        },
+        { 
+          type: 'image', 
+          title: `Gallery: ${productionConfig.videoStyle} Style`, 
+          date: 'Day 4', 
+          platform: 'Instagram',
+          script: "Hero image showing the transformation. Carousel post detailing the 3 key benefits of the AI spark.",
+          visualPrompt: "Minimalist flat design, vibrant energy colors"
+        },
+        { 
+          type: 'video', 
+          title: `Deep Dive: ${productionConfig.voice} Narration`, 
+          date: 'Day 7', 
+          platform: 'YouTube',
+          script: "Detailed walkthrough of the generation engine. Narration focuses on time-saving and creative freedom.",
+          visualPrompt: "Macro tech shots, floating UI elements, smooth transitions"
+        },
+      ];
+
+      batchItems = await Promise.all(mockBatch.map(async (item, i) => {
+        let videoUrl = item.type === 'video' ? 'https://www.w3schools.com/html/mov_bbb.mp4' : null;
+        let audioUrl = null;
+        try {
+          if (item.type === 'video') {
+            const avatarIdentity = AVATAR_IDENTITIES[productionConfig.voice] || AVATAR_IDENTITIES['Jessica'];
+            const stylePreset = VIDEO_STYLE_PRESETS[productionConfig.videoStyle] || VIDEO_STYLE_PRESETS['Cinematic'];
+            
+            const masterPrompt = `
+              IDENTITY: ${avatarIdentity.description}
+              ACTION: Speaking directly to camera, professional presenter style, high-fidelity synchronized lip movements, phonetic accuracy, ${item.visualPrompt || item.script || item.title}
+              STYLE: ${stylePreset.keywords}
+              ENFORCEMENT: MAINTAIN EXACT LIKENESS. The person must look 100% identical to the provided image. Do not alter facial features.
+            `.trim();
+
+            const durationNum = parseInt(productionConfig.duration.replace(/[^0-9]/g, '')) || 5;
+            console.log("Generating Fallback with Master Prompt, Avatar Sync, and Duration:", masterPrompt, productionConfig.avatar, durationNum);
+            videoUrl = await generateRunwayVideo(masterPrompt, productionConfig.aspectRatio, productionConfig.avatar, durationNum);
+          }
+          if (item.script) {
+            audioUrl = await generateElevenLabsVoice(item.script, productionConfig.voiceId || productionConfig.voice);
+          }
+        } catch (err) {
+          console.error("Fallback APIs failed:", err);
+        }
+
+        const d = new Date();
+        d.setDate(d.getDate() + (i * 3));
+        return {
+          ...item,
+          status: 'ready',
+          scheduledDate: d.toISOString(),
+          thumbnail: `https://picsum.photos/seed/${encodeURIComponent(item.title + Math.random())}/800/450`,
+          videoUrl: videoUrl || null,
+          audioUrl: audioUrl || null,
+          musicStyle: productionConfig.musicStyle
+        };
+      }));
     }
 
     try {
@@ -486,6 +575,7 @@ export default function App() {
       <main className="flex-1 py-10 px-4 max-w-7xl mx-auto w-full">
         {currentView === 'dashboard' ? (
           <DashboardView 
+            user={user}
             activeMode={activeMode}
             setActiveMode={setActiveMode}
             isProcessing={isProcessing}
@@ -594,34 +684,115 @@ function DashboardView({
   sparkInput,
   setSparkInput,
   productionConfig,
-  setProductionConfig
+  setProductionConfig,
+  user
 }: any) {
   const [isRecording, setIsRecording] = useState(false);
   const [recognition, setRecognition] = useState<any>(null);
   const musicAudioRef = useRef<HTMLAudioElement | null>(null);
+  const voiceAudioRef = useRef<HTMLAudioElement | null>(null);
   const [isPlayingMusic, setIsPlayingMusic] = useState(false);
+  const [isPlayingVoice, setIsPlayingVoice] = useState(false);
+
+  const [platformVoices, setPlatformVoices] = useState<any[]>([]);
+  const [clonedVoices, setClonedVoices] = useState<any[]>([]);
+  const [isCloningModalOpen, setIsCloningModalOpen] = useState(false);
+  const [cloneVoiceName, setCloneVoiceName] = useState("");
+  const [cloneVoiceDescription, setCloneVoiceDescription] = useState("");
+  const [cloneVoiceFile, setCloneVoiceFile] = useState<File | null>(null);
+  const [isCloning, setIsCloning] = useState(false);
+  const [cloningError, setCloningError] = useState("");
+
+  useEffect(() => {
+    const loadVoices = async () => {
+      try {
+        const pVoices = await getElevenLabsVoices();
+        setPlatformVoices(pVoices);
+        
+        if (user) {
+          const cVoices = await getUserClonedVoices(user.uid);
+          setClonedVoices(cVoices);
+        }
+        
+        // Select the first platform voice by default if none selected
+        if (!productionConfig.voiceId && pVoices.length > 0) {
+          setProductionConfig((prev: any) => ({
+            ...prev,
+            voiceId: pVoices[0].voice_id,
+            voice: pVoices[0].name
+          }));
+        }
+      } catch (e) {
+        console.error("Failed to load voices", e);
+      }
+    };
+    loadVoices();
+  }, [user]);
 
   const updateConfig = (key: string, value: any) => {
     setProductionConfig((prev: any) => ({ ...prev, [key]: value }));
   };
 
-  const previewVoice = () => {
-    const utterance = new SpeechSynthesisUtterance("Hello, this is a preview of the " + productionConfig.voice + " voice for your cinematic content.");
-    // Map voices to pitch/rate for simulation
-    if (productionConfig.voice === 'Deep Narrator') {
-      utterance.pitch = 0.8;
-      utterance.rate = 0.9;
-    } else if (productionConfig.voice === 'Energetic Host') {
-      utterance.pitch = 1.2;
-      utterance.rate = 1.1;
-    } else if (productionConfig.voice === 'Tech Guru') {
-      utterance.pitch = 1.0;
-      utterance.rate = 1.0;
-    } else if (productionConfig.voice === 'Soft Calm') {
-      utterance.pitch = 1.1;
-      utterance.rate = 0.8;
+  const handleCloneVoice = async () => {
+    if (!cloneVoiceName || !cloneVoiceFile || !user) return;
+    setIsCloning(true);
+    setCloningError("");
+    try {
+      // 1. Upload to ElevenLabs
+      const newVoiceId = await cloneUserVoice(cloneVoiceName, cloneVoiceDescription || "Cloned user voice", cloneVoiceFile);
+      // 2. Save to Firebase
+      await saveClonedVoice(user.uid, newVoiceId, cloneVoiceName);
+      
+      // 3. Update state
+      const updatedClonedVoices = await getUserClonedVoices(user.uid);
+      setClonedVoices(updatedClonedVoices);
+      
+      // 4. Auto-select
+      setProductionConfig((prev: any) => ({
+        ...prev,
+        voiceId: newVoiceId,
+        voice: cloneVoiceName
+      }));
+      
+      setIsCloningModalOpen(false);
+      setCloneVoiceName("");
+      setCloneVoiceDescription("");
+      setCloneVoiceFile(null);
+    } catch (e: any) {
+      setCloningError(e.message || "Failed to clone voice");
+    } finally {
+      setIsCloning(false);
     }
-    window.speechSynthesis.speak(utterance);
+  };
+
+  const previewVoice = async () => {
+    if (isPlayingVoice) {
+      voiceAudioRef.current?.pause();
+      setIsPlayingVoice(false);
+      return;
+    }
+    
+    setIsPlayingVoice(true);
+    try {
+      const audioUrl = await generateElevenLabsVoice(
+        `Hello, this is a preview of the ${productionConfig.voice} voice.`,
+        productionConfig.voiceId || productionConfig.voice
+      );
+      
+      if (!voiceAudioRef.current) {
+        voiceAudioRef.current = new Audio(audioUrl);
+      } else {
+        voiceAudioRef.current.src = audioUrl;
+      }
+      
+      voiceAudioRef.current.play();
+      voiceAudioRef.current.onended = () => {
+        setIsPlayingVoice(false);
+      };
+    } catch (e) {
+      console.error("Voice preview failed", e);
+      setIsPlayingVoice(false);
+    }
   };
 
   const handleAvatarUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -995,21 +1166,49 @@ function DashboardView({
                     </label>
                     <div className="flex gap-2">
                       <select 
-                        value={productionConfig.voice}
-                        onChange={(e) => updateConfig('voice', e.target.value)}
+                        value={productionConfig.voiceId || productionConfig.voice}
+                        onChange={(e) => {
+                          const selectedId = e.target.value;
+                          const selectedVoice = [...platformVoices, ...clonedVoices].find(v => (v.voice_id || v.voiceId) === selectedId);
+                          if (selectedVoice) {
+                            setProductionConfig((prev: any) => ({
+                              ...prev,
+                              voiceId: selectedId,
+                              voice: selectedVoice.name
+                            }));
+                          }
+                        }}
                         className="flex-1 glass p-3 rounded-xl border-white/5 focus:outline-none focus:border-sky/40 text-sm appearance-none bg-forest"
                       >
-                        <option value="Deep Narrator">Deep Narrator (Male)</option>
-                        <option value="Energetic Host">Energetic Host (Female)</option>
-                        <option value="Tech Guru">Tech Guru (Modern)</option>
-                        <option value="Soft Calm">Soft & Calm (ASMR)</option>
+                        {platformVoices.length === 0 && <option value="">Loading voices...</option>}
+                        {clonedVoices.length > 0 && (
+                          <optgroup label="My Cloned Voices">
+                            {clonedVoices.map(v => (
+                              <option key={v.voiceId} value={v.voiceId}>{v.name} (Custom)</option>
+                            ))}
+                          </optgroup>
+                        )}
+                        {platformVoices.length > 0 && (
+                          <optgroup label="Platform Voices">
+                            {platformVoices.map(v => (
+                              <option key={v.voice_id} value={v.voice_id}>{v.name}</option>
+                            ))}
+                          </optgroup>
+                        )}
                       </select>
                       <button 
                         onClick={previewVoice}
                         className="p-3 rounded-xl glass border-white/5 hover:bg-white/10 transition-colors flex items-center justify-center shrink-0"
-                        title="Preview Voice"
+                        title={isPlayingVoice ? "Stop Preview" : "Preview Voice"}
                       >
-                        <Play className="w-4 h-4 text-sky" />
+                        {isPlayingVoice ? <Square className="w-4 h-4 text-sky" /> : <Play className="w-4 h-4 text-sky" />}
+                      </button>
+                      <button 
+                        onClick={() => setIsCloningModalOpen(true)}
+                        className="p-3 rounded-xl glass border-white/5 hover:bg-white/10 transition-colors flex items-center justify-center shrink-0"
+                        title="Clone Voice"
+                      >
+                        <Mic className="w-4 h-4 text-emerald" />
                       </button>
                     </div>
                   </div>
@@ -1301,6 +1500,115 @@ function DashboardView({
             ) : (
               <CalendarGrid content={generatedContent} />
             )}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Voice Cloning Modal */}
+      <AnimatePresence>
+        {isCloningModalOpen && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm"
+          >
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-forest border border-white/10 p-6 rounded-2xl w-full max-w-md shadow-2xl"
+            >
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-xl font-bold font-heading text-white">Clone Your Voice</h3>
+                <button onClick={() => setIsCloningModalOpen(false)} className="p-2 hover:bg-white/10 rounded-full transition-colors text-white/50 hover:text-white">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              
+              {!user ? (
+                <div className="text-center py-8">
+                  <p className="text-white/70 mb-4">You must be logged in to clone and save your custom voices.</p>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-widest text-white/50 mb-1">Voice Name</label>
+                    <input 
+                      type="text" 
+                      value={cloneVoiceName}
+                      onChange={(e) => setCloneVoiceName(e.target.value)}
+                      placeholder="e.g. My Cinematic Voice"
+                      className="w-full bg-black/30 border border-white/10 rounded-xl p-3 text-white focus:border-emerald/50 focus:outline-none placeholder-white/20"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-widest text-white/50 mb-1">Description (Optional)</label>
+                    <input 
+                      type="text" 
+                      value={cloneVoiceDescription}
+                      onChange={(e) => setCloneVoiceDescription(e.target.value)}
+                      placeholder="e.g. Energetic and fast-paced"
+                      className="w-full bg-black/30 border border-white/10 rounded-xl p-3 text-white focus:border-emerald/50 focus:outline-none placeholder-white/20"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-widest text-white/50 mb-1">Upload Audio Sample</label>
+                    <div className="border-2 border-dashed border-white/20 rounded-xl p-6 text-center hover:border-emerald/40 transition-colors bg-black/20">
+                      <input 
+                        type="file" 
+                        accept="audio/mpeg, audio/wav, audio/mp3" 
+                        id="voice-upload"
+                        className="hidden"
+                        onChange={(e) => {
+                          if (e.target.files && e.target.files[0]) {
+                            setCloneVoiceFile(e.target.files[0]);
+                          }
+                        }}
+                      />
+                      <label htmlFor="voice-upload" className="cursor-pointer flex flex-col items-center">
+                        <Upload className="w-8 h-8 text-white/40 mb-2" />
+                        <span className="text-sm font-medium text-white/80">
+                          {cloneVoiceFile ? cloneVoiceFile.name : "Click to select a clean audio file (MP3/WAV)"}
+                        </span>
+                        <span className="text-xs text-white/40 mt-1">Must be over 1 minute for best results.</span>
+                      </label>
+                    </div>
+                  </div>
+                  
+                  <div className="bg-black/30 p-3 rounded-xl border border-amber/20 flex items-start gap-3 mt-4">
+                    <input type="checkbox" id="consent" className="mt-1" />
+                    <label htmlFor="consent" className="text-xs text-white/70 leading-relaxed">
+                      I confirm that I have all necessary rights or consents to clone this voice, and it will not be used for fraudulent or illegal purposes.
+                    </label>
+                  </div>
+
+                  {cloningError && (
+                    <div className="bg-red-500/20 text-red-300 p-3 rounded-lg text-sm border border-red-500/30">
+                      {cloningError}
+                    </div>
+                  )}
+
+                  <button 
+                    onClick={handleCloneVoice}
+                    disabled={!cloneVoiceName || !cloneVoiceFile || isCloning}
+                    className="w-full mt-4 bg-emerald hover:bg-emerald/90 disabled:opacity-50 disabled:cursor-not-allowed text-black font-bold py-3 px-6 rounded-xl transition-all flex justify-center items-center gap-2 shadow-[0_0_20px_rgba(16,185,129,0.3)] hover:shadow-[0_0_30px_rgba(16,185,129,0.5)]"
+                  >
+                    {isCloning ? (
+                      <>
+                        <RefreshCcw className="w-5 h-5 animate-spin" />
+                        Cloning Voice...
+                      </>
+                    ) : (
+                      <>
+                        <Mic className="w-5 h-5" />
+                        Clone Voice Instantly
+                      </>
+                    )}
+                  </button>
+                </div>
+              )}
+            </motion.div>
           </motion.div>
         )}
       </AnimatePresence>
@@ -1770,8 +2078,9 @@ function ContentCard({ item, index }: { item: ContentItem; index: number; key?: 
               {item.type === 'video' ? (
                 <>
                 <video 
-                  src={item.videoUrl || 'https://assets.mixkit.co/videos/preview/mixkit-girl-in-neon-lighting-in-the-city-at-night-21015-large.mp4'} 
+                  src={item.videoUrl || 'https://www.w3schools.com/html/mov_bbb.mp4'} 
                   autoPlay 
+                  muted
                   controls 
                   className="w-full h-full object-contain"
                 />
@@ -1800,6 +2109,13 @@ function ContentCard({ item, index }: { item: ContentItem; index: number; key?: 
                       <p className="text-white/40 text-sm mt-1">Ready for {item.platform} export</p>
                     </div>
                   </div>
+                </div>
+              )}
+              
+              {item.audioUrl && (
+                <div className="absolute top-6 left-6 z-50 bg-black/60 backdrop-blur-md p-4 rounded-xl border border-white/10">
+                   <p className="text-gold font-bold text-xs uppercase tracking-widest mb-2">AI Voice Narration</p>
+                   <audio src={item.audioUrl} autoPlay controls className="h-8" />
                 </div>
               )}
             </div>
