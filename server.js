@@ -61,7 +61,7 @@ app.post('/api/generate-video', async (req, res) => {
 
 
     // 1. Create the task
-    const createRes = await fetch('https://api.runwayml.com/v1/image_to_video', {
+    const createRes = await fetch('https://api.dev.runwayml.com/v1/image_to_video', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
@@ -83,7 +83,7 @@ app.post('/api/generate-video', async (req, res) => {
     let attempts = 0;
     while (attempts < 60) { // Max 5 minutes
       await new Promise(r => setTimeout(r, 5000));
-      const pollRes = await fetch(`https://api.runwayml.com/v1/tasks/${taskId}`, {
+      const pollRes = await fetch(`https://api.dev.runwayml.com/v1/tasks/${taskId}`, {
         headers: {
           'Authorization': `Bearer ${apiKey}`,
           'X-Runway-Version': '2024-11-06'
